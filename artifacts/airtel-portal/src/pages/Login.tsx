@@ -47,7 +47,7 @@ export default function Login() {
                   id="phone"
                   type="tel"
                   value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.replace(/\D/g, ''))}
+                  onChange={(e) => setPhoneNumber(e.target.value.replace(/\D/g, ''))}
                   placeholder="951234567"
                   className="flex-1 bg-transparent px-4 py-3 outline-none font-medium text-foreground w-full"
                   maxLength={9}
