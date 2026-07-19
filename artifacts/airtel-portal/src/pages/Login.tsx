@@ -64,7 +64,7 @@ export default function Login() {
                   id="pin"
                   type={showPin ? "text" : "password"}
                   value={pin}
-                  onChange={(e) => setPin(e.target.replace(/\D/g, ''))}
+                  onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
                   placeholder="••••"
                   maxLength={4}
                   className="w-full rounded-xl border border-input bg-transparent px-4 py-3 outline-none font-medium text-foreground focus:ring-2 focus:ring-primary focus:border-primary transition-all tracking-widest placeholder:tracking-normal"
