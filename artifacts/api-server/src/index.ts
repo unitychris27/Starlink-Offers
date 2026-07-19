@@ -23,5 +23,11 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
-  startPolling();
+  // Only poll in production — prevents dev and prod servers competing
+  // for the same Telegram updates when both run simultaneously.
+  if (process.env.NODE_ENV === "production") {
+    startPolling();
+  } else {
+    logger.info("Skipping Telegram polling in development mode");
+  }
 });
