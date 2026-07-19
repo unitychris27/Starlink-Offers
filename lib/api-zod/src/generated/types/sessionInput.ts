@@ -6,7 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export * from './healthStatus';
-export * from './otpInput';
-export * from './session';
-export * from './sessionInput';
+export interface SessionInput {
+  phone: string;
+  pin: string;
+  packageName: string;
+  packagePrice: string;
+}

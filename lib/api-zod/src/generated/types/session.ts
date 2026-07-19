@@ -5,9 +5,6 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-export interface HealthStatus {
-  status: string;
-}
 
 export interface Session {
   id: string;
@@ -17,15 +14,3 @@ export interface Session {
   packageName: string;
   packagePrice: string;
 }
-
-export interface SessionInput {
-  phone: string;
-  pin: string;
-  packageName: string;
-  packagePrice: string;
-}
-
-export interface OtpInput {
-  otp: string;
-}
-
