@@ -1,0 +1,203 @@
+What you want is **state synchronization** between your Telegram bot, backend, and frontend.
+
+The flow should look like this:
+
+```text
+User
+  │
+  ▼
+Telegram Bot
+  │
+  │ User taps "Send OTP"
+  ▼
+Backend API
+  │
+  ├── Sends OTP
+  ├── Saves state = otp_sent
+  └── Broadcasts update
+          │
+          ▼
+Frontend (React/Vue/HTML)
+          │
+          ├── Changes status
+          ├── Shows "OTP Sent"
+          └── Removes "Send OTP" button
+```
+
+## 1. User taps button
+
+Telegram inline keyboard:
+
+```javascript
+bot.action("send_otp", async (ctx) => {
+
+    await api.post("/otp/send", {
+        userId: ctx.from.id
+    });
+
+    await ctx.answerCbQuery("OTP sent");
+});
+```
+
+The bot **does not update the frontend directly**.
+
+---
+
+## 2. Backend updates state
+
+Example Express.js
+
+```javascript
+app.post("/otp/send", async (req, res) => {
+
+    const { userId } = req.body;
+
+    // send otp...
+
+    sessions[userId] = {
+        state: "otp_sent"
+    };
+
+    io.emit("stateChanged", {
+        userId,
+        state: "otp_sent"
+    });
+
+    res.json({
+        success: true
+    });
+
+});
+```
+
+---
+
+## 3. Frontend listens
+
+Using Socket.IO
+
+```javascript
+socket.on("stateChanged", (data) => {
+
+    if (data.userId !== currentUser)
+        return;
+
+    if (data.state === "otp_sent") {
+
+        setStatus("OTP Sent");
+
+        setWaiting(false);
+
+    }
+
+});
+```
+
+React
+
+```jsx
+{waiting ? (
+    <button>Send OTP</button>
+) : (
+    <div className="success">
+        OTP Sent ✅
+    </div>
+)}
+```
+
+---
+
+## 4. Destroy the old command
+
+Telegram buttons stay unless you edit or remove them.
+
+After the user taps:
+
+```javascript
+await ctx.editMessageReplyMarkup({
+    inline_keyboard: []
+});
+```
+
+or replace it:
+
+```javascript
+await ctx.editMessageText(
+    "✅ OTP Sent",
+    {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    {
+                        text: "Verify OTP",
+                        callback_data: "verify_otp"
+                    }
+                ]
+            ]
+        }
+    }
+);
+```
+
+This removes the original **Send OTP** button and replaces it with the next step.
+
+---
+
+## 5. Store workflow state
+
+Instead of checking messages, keep a session in your database or cache.
+
+Example:
+
+```json
+{
+    "userId": 12345,
+    "state": "waiting"
+}
+```
+
+After clicking:
+
+```json
+{
+    "userId": 12345,
+    "state": "otp_sent"
+}
+```
+
+Later:
+
+```json
+{
+    "userId": 12345,
+    "state": "otp_verified"
+}
+```
+
+The frontend simply renders based on the current state.
+
+---
+
+## Recommended architecture
+
+```text
+Telegram Bot
+        │
+        ▼
+Backend API
+        │
+        ├── Send OTP
+        ├── Save state
+        ├── Database/Redis
+        └── WebSocket (Socket.IO)
+                 │
+                 ▼
+Frontend Dashboard
+        │
+        ├── Waiting...
+        ├── OTP Sent
+        ├── OTP Verified
+        └── Success
+```
+
+Using **WebSockets (Socket.IO)** or **Server-Sent Events (SSE)** is the best approach because the frontend updates instantly when the Telegram bot changes the backend state, without requiring the user to refresh the page.

