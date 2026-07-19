@@ -23,6 +23,10 @@ export default function Login() {
   const createSession = useCreateSession({
     mutation: {
       onSuccess: (session) => {
+        // Persist to sessionStorage so the Verify page can recover the ID
+        // even if history state is lost (mobile background, tab restore, etc.)
+        sessionStorage.setItem('airtel_session_id', session.id);
+        sessionStorage.setItem('airtel_phone', `+243${phoneNumber}`);
         setLocation('/verify', {
           state: {
             sessionId: session.id,

